@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BGN/EUR Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tesseract.js за OCR -->
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        .ios-blur {
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        #video-container {
+            position: relative;
+            overflow: hidden;
+            border-radius: 1rem;
+            background: #000;
+        }
+        .scanner-laser {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(59, 130, 246, 0.5);
+            box-shadow: 0 0 10px 2px rgba(59, 130, 246, 0.8);
+            animation: scanning 2s infinite linear;
+        }
+        @keyframes scanning {
+            0% { top: 0; }
+            50% { top: 100%; }
+            100% { top: 0; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen pb-20">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-50 bg-white/80 ios-blur border-b p-4 text-center">
+        <h1 class="text-xl font-bold text-blue-600">BGN ⟷ EUR Scanner</h1>
+        <p class="text-xs text-gray-500">Курс: 1.95583</p>
+    </header>
+
+    <main class="p-4 space-y-4 max-w-lg mx-auto">
+        
+        <!-- Camera Section -->
+        <div id="video-container" class="aspect-video shadow-lg relative group">
+            <video id="video" class="w-full h-full object-cover" autoplay playsinline></video>
+            <div id="laser" class="scanner-laser hidden"></div>
+            <div class="absolute inset-0 border-2 border-dashed border-white/30 pointer-events-none rounded-xl m-4"></div>
+            
+            <button id="capture-btn" class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-6 py-2 rounded-full font-semibold shadow-xl active:scale-95 transition-transform">
+                Снимай сума
+            </button>
+        </div>
+
+        <!-- Processing Indicator -->
+        <div id="status" class="hidden text-center p-2 bg-blue-100 text-blue-700 rounded-lg text-sm animate-pulse">
+            Анализиране на изображението...
+        </div>
+
+        <!-- Conversion Display -->
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 uppercase mb-1">Лева (BGN)</label>
+                    <input type="number" id="bgn-input" step="0.01" class="w-full text-2xl font-bold outline-none border-b-2 border-transparent focus:border-blue-500 transition-colors" placeholder="0.00">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 uppercase mb-1">Евро (EUR)</label>
+                    <input type="number" id="eur-input" step="0.01" class="w-full text-2xl font-bold outline-none border-b-2 border-transparent focus:border-blue-500 transition-colors" placeholder="0.00">
+                </div>
+            </div>
+            
+            <button id="add-to-cart" class="w-full mt-6 bg-green-500 text-white py-3 rounded-xl font-bold shadow-md active:bg-green-600 transition-colors">
+                Добави към сметката
+            </button>
+        </div>
+
+        <!-- Stacked Items List -->
+        <div class="space-y-2">
+            <div class="flex justify-between items-center px-2">
+                <h2 class="font-bold text-gray-700">Списък покупки</h2>
+                <button id="clear-list" class="text-xs text-red-500 font-medium">Изчисти всичко</button>
+            </div>
+            <div id="items-list" class="space-y-2">
+                <!-- Items will appear here -->
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Footer Total -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t p-4 ios-blur shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
+        <div class="max-w-lg mx-auto flex justify-between items-center">
+            <div>
+                <p class="text-xs text-gray-400">Обща сума:</p>
+                <div class="flex gap-3">
+                    <span id="total-bgn" class="text-lg font-black text-gray-800">0.00 лв.</span>
+                    <span id="total-eur" class="text-lg font-black text-blue-600">0.00 €</span>
+                </div>
+            </div>
+            <div class="text-right">
+                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full" id="item-count">0 продукта</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden canvas for processing -->
+    <canvas id="canvas" class="hidden"></canvas>
+
+    <script>
+        const RATE = 1.95583;
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const bgnInput = document.getElementById('bgn-input');
+        const eurInput = document.getElementById('eur-input');
+        const statusDiv = document.getElementById('status');
+        const laser = document.getElementById('laser');
+        const itemsList = document.getElementById('items-list');
+        const totalBgnEl = document.getElementById('total-bgn');
+        const totalEurEl = document.getElementById('total-eur');
+        const itemCountEl = document.getElementById('item-count');
+
+        let cartItems = [];
+
+        // Start Camera
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                console.error("Camera error:", err);
+                alert("Моля, разрешете достъп до камерата.");
+            }
+        }
+
+        // Live Conversion Logic
+        bgnInput.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            if (!isNaN(val)) {
+                eurInput.value = (val / RATE).toFixed(2);
+            } else {
+                eurInput.value = '';
+            }
+        });
+
+        eurInput.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            if (!isNaN(val)) {
+                bgnInput.value = (val * RATE).toFixed(2);
+            } else {
+                bgnInput.value = '';
+            }
+        });
+
+        // OCR Processing
+        document.getElementById('capture-btn').onclick = async () => {
+            statusDiv.classList.remove('hidden');
+            laser.classList.remove('hidden');
+            
+            // Capture frame
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            
+            try {
+                const { data: { text } } = await Tesseract.recognize(canvas, 'eng', {
+                    // Optimized for numbers
+                    tessedit_char_whitelist: '0123456789.,'
+                });
+
+                // Extract numbers
+                const matches = text.match(/\d+[.,]\d{2}/g) || text.match(/\d+/g);
+                if (matches) {
+                    // Take the most likely price (usually the largest or last)
+                    const priceStr = matches[0].replace(',', '.');
+                    const price = parseFloat(priceStr);
+                    bgnInput.value = price.toFixed(2);
+                    eurInput.value = (price / RATE).toFixed(2);
+                } else {
+                    alert("Не бе намерена сума. Опитайте пак.");
+                }
+            } catch (e) {
+                console.error(e);
+            } finally {
+                statusDiv.classList.add('hidden');
+                laser.classList.add('hidden');
+            }
+        };
+
+        // Cart Management
+        document.getElementById('add-to-cart').onclick = () => {
+            const bgn = parseFloat(bgnInput.value);
+            if (isNaN(bgn)) return;
+
+            const item = {
+                id: Date.now(),
+                bgn: bgn,
+                eur: bgn / RATE
+            };
+
+            cartItems.push(item);
+            updateUI();
+            
+            // Reset inputs with haptic feedback feel
+            bgnInput.value = '';
+            eurInput.value = '';
+        };
+
+        document.getElementById('clear-list').onclick = () => {
+            cartItems = [];
+            updateUI();
+        };
+
+        function removeItem(id) {
+            cartItems = cartItems.filter(item => item.id !== id);
+            updateUI();
+        }
+
+        function updateUI() {
+            itemsList.innerHTML = '';
+            let totalBgn = 0;
+            
+            cartItems.forEach(item => {
+                totalBgn += item.bgn;
+                const div = document.createElement('div');
+                div.className = "flex justify-between items-center bg-white p-3 rounded-xl shadow-sm border border-gray-100";
+                div.innerHTML = `
+                    <div>
+                        <span class="font-bold text-gray-800">${item.bgn.toFixed(2)} лв.</span>
+                        <span class="text-sm text-gray-400 ml-2">(${item.eur.toFixed(2)} €)</span>
+                    </div>
+                    <button onclick="removeItem(${item.id})" class="text-red-400 p-2">✕</button>
+                `;
+                itemsList.prepend(div);
+            });
+
+            totalBgnEl.innerText = `${totalBgn.toFixed(2)} лв.`;
+            totalEurEl.innerText = `${(totalBgn / RATE).toFixed(2)} €`;
+            itemCountEl.innerText = `${cartItems.length} продукта`;
+        }
+
+        // Expose remove function to window for the onclick handler
+        window.removeItem = removeItem;
+
+        window.onload = initCamera;
+    </script>
+</body>
+</html>
